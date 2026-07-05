@@ -1,0 +1,478 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LLM batch caller</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --text: #17202a;
+      --muted: #5f6b7a;
+      --border: #d8dee8;
+      --accent: #1769aa;
+      --accent-hover: #125789;
+      --error: #b42318;
+      --ok: #157347;
+      --shadow: 0 12px 30px rgba(23, 32, 42, 0.08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      line-height: 1.5;
+    }
+
+    main {
+      width: min(100% - 32px, 720px);
+      margin: 0 auto;
+      padding: 48px 0;
+    }
+
+    h1 {
+      margin: 0 0 28px;
+      font-size: 2rem;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      padding: 24px;
+    }
+
+    .field {
+      display: grid;
+      gap: 8px;
+      margin-bottom: 20px;
+    }
+
+    label {
+      font-weight: 650;
+    }
+
+    textarea,
+    input[type="text"],
+    input[type="file"] {
+      width: 100%;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: #ffffff;
+      color: var(--text);
+      font: inherit;
+    }
+
+    textarea,
+    input[type="text"] {
+      padding: 11px 12px;
+    }
+
+    textarea {
+      min-height: 140px;
+      resize: vertical;
+    }
+
+    input[type="file"] {
+      padding: 10px;
+    }
+
+    textarea:focus,
+    input:focus {
+      border-color: var(--accent);
+      outline: 3px solid rgba(23, 105, 170, 0.18);
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 12px;
+      margin-top: 8px;
+    }
+
+    button {
+      border: 0;
+      border-radius: 6px;
+      background: var(--accent);
+      color: #ffffff;
+      cursor: pointer;
+      font: inherit;
+      font-weight: 700;
+      padding: 11px 18px;
+    }
+
+    button:hover:not(:disabled) {
+      background: var(--accent-hover);
+    }
+
+    button:disabled {
+      cursor: not-allowed;
+      opacity: 0.65;
+    }
+
+    #downloadCsv {
+      display: none;
+      background: var(--ok);
+    }
+
+    #downloadCsv:hover {
+      background: #11643d;
+    }
+
+    .section {
+      margin-top: 28px;
+    }
+
+    .section h2 {
+      margin: 0 0 10px;
+      font-size: 1.05rem;
+      letter-spacing: 0;
+    }
+
+    #status {
+      min-height: 48px;
+      max-height: 220px;
+      overflow: auto;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: #fbfcfe;
+      color: var(--muted);
+      padding: 12px;
+      white-space: pre-wrap;
+    }
+
+    #status.error {
+      color: var(--error);
+    }
+
+    #results {
+      display: grid;
+      gap: 14px;
+    }
+
+    .result {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #ffffff;
+      padding: 14px;
+    }
+
+    .result-header {
+      color: var(--muted);
+      font-size: 0.92rem;
+      font-weight: 700;
+      margin-bottom: 10px;
+    }
+
+    .result-grid {
+      display: grid;
+      gap: 10px;
+    }
+
+    .result-label {
+      color: var(--muted);
+      font-size: 0.86rem;
+      font-weight: 700;
+      margin-bottom: 4px;
+      text-transform: uppercase;
+    }
+
+    .result-text {
+      overflow-wrap: anywhere;
+      white-space: pre-wrap;
+    }
+
+    @media (max-width: 520px) {
+      main {
+        width: min(100% - 24px, 720px);
+        padding: 28px 0;
+      }
+
+      .panel {
+        padding: 18px;
+      }
+
+      h1 {
+        font-size: 1.7rem;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>LLM batch caller</h1>
+
+    <section class="panel" aria-label="Batch caller controls">
+      <div class="field">
+        <label for="systemPrompt">System prompt</label>
+        <textarea id="systemPrompt"></textarea>
+      </div>
+
+      <div class="field">
+        <label for="promptFile">Prompt file</label>
+        <input id="promptFile" type="file" accept=".txt,.csv,text/plain,text/csv">
+      </div>
+
+      <div class="field">
+        <label for="modelName">Model name</label>
+        <input id="modelName" type="text" value="qwen3.5-0.8b" autocomplete="off" spellcheck="false">
+      </div>
+
+      <div class="actions">
+        <button id="runButton" type="button">Run</button>
+        <button id="downloadCsv" type="button">Download CSV</button>
+      </div>
+    </section>
+
+    <section class="section" aria-live="polite">
+      <h2>Status</h2>
+      <div id="status">Waiting for a file.</div>
+    </section>
+
+    <section class="section">
+      <h2>Results</h2>
+      <div id="results"></div>
+    </section>
+  </main>
+
+  <script>
+    const endpoint = "http://localhost:1234/v1/chat/completions";
+
+    const systemPromptEl = document.getElementById("systemPrompt");
+    const promptFileEl = document.getElementById("promptFile");
+    const modelNameEl = document.getElementById("modelName");
+    const runButton = document.getElementById("runButton");
+    const downloadCsvButton = document.getElementById("downloadCsv");
+    const statusEl = document.getElementById("status");
+    const resultsEl = document.getElementById("results");
+
+    let results = [];
+
+    function setStatus(message, isError = false) {
+      statusEl.textContent = message;
+      statusEl.classList.toggle("error", isError);
+    }
+
+    function readSelectedFile(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ""));
+        reader.onerror = () => reject(new Error(reader.error ? reader.error.message : "Could not read file."));
+        reader.readAsText(file);
+      });
+    }
+
+    function splitPrompts(text) {
+      const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+      const lines = normalized.split("\n");
+
+      if (lines.length > 0 && lines[lines.length - 1] === "") {
+        lines.pop();
+      }
+
+      return lines;
+    }
+
+    async function callModel(model, systemPrompt, input) {
+      const messages = [];
+
+      if (systemPrompt.trim().length > 0) {
+        messages.push({ role: "system", content: systemPrompt });
+      }
+
+      messages.push({ role: "user", content: input });
+
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          model,
+          messages,
+          temperature: 0.7
+        })
+      });
+
+      const responseText = await response.text();
+      let data = null;
+
+      try {
+        data = responseText ? JSON.parse(responseText) : null;
+      } catch (error) {
+        throw new Error(response.ok ? "The API returned invalid JSON." : responseText);
+      }
+
+      if (!response.ok) {
+        const apiMessage = data && data.error && data.error.message ? data.error.message : responseText;
+        throw new Error(apiMessage || `Request failed with status ${response.status}.`);
+      }
+
+      if (!data ||
+          !data.choices ||
+          !data.choices[0] ||
+          !data.choices[0].message ||
+          typeof data.choices[0].message.content !== "string") {
+        throw new Error("The API response did not include message content.");
+      }
+
+      return data.choices[0].message.content;
+    }
+
+    function renderResults() {
+      resultsEl.textContent = "";
+
+      for (const item of results) {
+        const article = document.createElement("article");
+        article.className = "result";
+
+        const header = document.createElement("div");
+        header.className = "result-header";
+        header.textContent = `Row ${item.row_number}`;
+
+        const grid = document.createElement("div");
+        grid.className = "result-grid";
+
+        const inputWrap = document.createElement("div");
+        const inputLabel = document.createElement("div");
+        inputLabel.className = "result-label";
+        inputLabel.textContent = "Input";
+        const inputText = document.createElement("div");
+        inputText.className = "result-text";
+        inputText.textContent = item.input;
+        inputWrap.append(inputLabel, inputText);
+
+        const responseWrap = document.createElement("div");
+        const responseLabel = document.createElement("div");
+        responseLabel.className = "result-label";
+        responseLabel.textContent = "Response";
+        const responseText = document.createElement("div");
+        responseText.className = "result-text";
+        responseText.textContent = item.response;
+        responseWrap.append(responseLabel, responseText);
+
+        grid.append(inputWrap, responseWrap);
+        article.append(header, grid);
+        resultsEl.append(article);
+      }
+    }
+
+    function escapeCsvField(value) {
+      const text = String(value == null ? "" : value);
+      const escaped = text.replace(/"/g, '""');
+      return /[",\n\r]/.test(escaped) ? `"${escaped}"` : escaped;
+    }
+
+    function buildCsv(rows) {
+      const header = ["row_number", "input", "response"];
+      const csvRows = [
+        header.map(escapeCsvField).join(","),
+        ...rows.map((row) => [
+          row.row_number,
+          row.input,
+          row.response
+        ].map(escapeCsvField).join(","))
+      ];
+
+      return csvRows.join("\r\n");
+    }
+
+    function downloadResults() {
+      const csv = buildCsv(results);
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+
+      link.href = url;
+      link.download = "results.csv";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    }
+
+    async function runBatch() {
+      const file = promptFileEl.files && promptFileEl.files[0];
+      const model = modelNameEl.value.trim();
+      const systemPrompt = systemPromptEl.value;
+
+      downloadCsvButton.style.display = "none";
+      results = [];
+      renderResults();
+
+      if (!file) {
+        setStatus("Choose a .txt or .csv file before running.", true);
+        return;
+      }
+
+      if (!model) {
+        setStatus("Enter a model name before running.", true);
+        return;
+      }
+
+      runButton.disabled = true;
+      promptFileEl.disabled = true;
+      modelNameEl.disabled = true;
+      systemPromptEl.disabled = true;
+
+      try {
+        const fileText = await readSelectedFile(file);
+        const prompts = splitPrompts(fileText);
+
+        if (prompts.length === 0) {
+          setStatus("The selected file did not contain any prompts.", true);
+          return;
+        }
+
+        setStatus(`Loaded ${prompts.length} prompt${prompts.length === 1 ? "" : "s"}. Starting batch...`);
+
+        for (let index = 0; index < prompts.length; index += 1) {
+          const rowNumber = index + 1;
+          const input = prompts[index];
+          setStatus(`Processing row ${rowNumber} of ${prompts.length}...`);
+
+          let responseText;
+
+          try {
+            responseText = await callModel(model, systemPrompt, input);
+          } catch (error) {
+            responseText = error && error.message ? `Error: ${error.message}` : "Error: Request failed.";
+          }
+
+          results.push({
+            row_number: rowNumber,
+            input,
+            response: responseText
+          });
+          renderResults();
+        }
+
+        setStatus(`Done. Processed ${results.length} row${results.length === 1 ? "" : "s"}.`);
+        downloadCsvButton.style.display = "inline-block";
+      } catch (error) {
+        setStatus(error && error.message ? error.message : "Something went wrong.", true);
+      } finally {
+        runButton.disabled = false;
+        promptFileEl.disabled = false;
+        modelNameEl.disabled = false;
+        systemPromptEl.disabled = false;
+      }
+    }
+
+    runButton.addEventListener("click", runBatch);
+    downloadCsvButton.addEventListener("click", downloadResults);
+  </script>
+</body>
+</html>
