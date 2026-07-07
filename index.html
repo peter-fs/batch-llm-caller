@@ -65,6 +65,7 @@
 
     textarea,
     input[type="text"],
+    input[type="password"],
     input[type="file"] {
       width: 100%;
       border: 1px solid var(--border);
@@ -75,7 +76,8 @@
     }
 
     textarea,
-    input[type="text"] {
+    input[type="text"],
+    input[type="password"] {
       padding: 11px 12px;
     }
 
@@ -226,8 +228,18 @@
       </div>
 
       <div class="field">
+        <label for="apiUrl">API URL</label>
+        <input id="apiUrl" type="text" value="http://localhost:1234/v1/chat/completions" autocomplete="off" spellcheck="false">
+      </div>
+
+      <div class="field">
+        <label for="apiKey">API Key</label>
+        <input id="apiKey" type="password" autocomplete="off" spellcheck="false">
+      </div>
+
+      <div class="field">
         <label for="modelName">Model name</label>
-        <input id="modelName" type="text" value="qwen3.5-0.8b" autocomplete="off" spellcheck="false">
+        <input id="modelName" type="text" value="qwen3.5-0.8b" placeholder="qwen3.5-0.8b (LM Studio), gemini-2.5-flash (Google AI Studio), meta-llama/llama-3.3-70b-instruct:free (OpenRouter)" autocomplete="off" spellcheck="false">
       </div>
 
       <div class="actions">
@@ -248,10 +260,10 @@
   </main>
 
   <script>
-    const endpoint = "http://localhost:1234/v1/chat/completions";
-
     const systemPromptEl = document.getElementById("systemPrompt");
     const promptFileEl = document.getElementById("promptFile");
+    const apiUrlEl = document.getElementById("apiUrl");
+    const apiKeyEl = document.getElementById("apiKey");
     const modelNameEl = document.getElementById("modelName");
     const runButton = document.getElementById("runButton");
     const downloadCsvButton = document.getElementById("downloadCsv");
@@ -285,8 +297,60 @@
       return lines;
     }
 
-    async function callModel(model, systemPrompt, input) {
+    function wait(ms) {
+      return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+
+    function getApiErrorMessage(data, fallbackText, status) {
+      if (Array.isArray(data) && data.length > 0) {
+        return getApiErrorMessage(data[0], fallbackText, status);
+      }
+
+      if (data && data.error && data.error.message) {
+        return data.error.message;
+      }
+
+      if (data && data.message) {
+        return data.message;
+      }
+
+      return fallbackText || `Request failed with status ${status}.`;
+    }
+
+    function isRetryableStatus(status) {
+      return status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
+    }
+
+    async function callModel(apiUrl, apiKey, model, systemPrompt, input) {
+      const maxAttempts = 3;
+      let lastError = null;
+
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        try {
+          return await callModelOnce(apiUrl, apiKey, model, systemPrompt, input);
+        } catch (error) {
+          lastError = error;
+
+          if (!isRetryableStatus(error.status) || attempt === maxAttempts) {
+            throw error;
+          }
+
+          await wait(1000 * attempt);
+        }
+      }
+
+      throw lastError || new Error("Request failed.");
+    }
+
+    async function callModelOnce(apiUrl, apiKey, model, systemPrompt, input) {
       const messages = [];
+      const headers = {
+        "Content-Type": "application/json"
+      };
+
+      if (apiKey.length > 0) {
+        headers.Authorization = `Bearer ${apiKey}`;
+      }
 
       if (systemPrompt.trim().length > 0) {
         messages.push({ role: "system", content: systemPrompt });
@@ -294,11 +358,9 @@
 
       messages.push({ role: "user", content: input });
 
-      const response = await fetch(endpoint, {
+      const response = await fetch(apiUrl, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
+        headers,
         body: JSON.stringify({
           model,
           messages,
@@ -312,12 +374,16 @@
       try {
         data = responseText ? JSON.parse(responseText) : null;
       } catch (error) {
-        throw new Error(response.ok ? "The API returned invalid JSON." : responseText);
+        const parseError = new Error(response.ok ? "The API returned invalid JSON." : responseText);
+        parseError.status = response.status;
+        throw parseError;
       }
 
       if (!response.ok) {
-        const apiMessage = data && data.error && data.error.message ? data.error.message : responseText;
-        throw new Error(apiMessage || `Request failed with status ${response.status}.`);
+        const apiMessage = getApiErrorMessage(data, responseText, response.status);
+        const requestError = new Error(apiMessage);
+        requestError.status = response.status;
+        throw requestError;
       }
 
       if (!data ||
@@ -405,6 +471,8 @@
 
     async function runBatch() {
       const file = promptFileEl.files && promptFileEl.files[0];
+      const apiUrl = apiUrlEl.value.trim();
+      const apiKey = apiKeyEl.value.trim();
       const model = modelNameEl.value.trim();
       const systemPrompt = systemPromptEl.value;
 
@@ -417,6 +485,11 @@
         return;
       }
 
+      if (!apiUrl) {
+        setStatus("Enter an API URL before running.", true);
+        return;
+      }
+
       if (!model) {
         setStatus("Enter a model name before running.", true);
         return;
@@ -424,6 +497,8 @@
 
       runButton.disabled = true;
       promptFileEl.disabled = true;
+      apiUrlEl.disabled = true;
+      apiKeyEl.disabled = true;
       modelNameEl.disabled = true;
       systemPromptEl.disabled = true;
 
@@ -446,7 +521,7 @@
           let responseText;
 
           try {
-            responseText = await callModel(model, systemPrompt, input);
+            responseText = await callModel(apiUrl, apiKey, model, systemPrompt, input);
           } catch (error) {
             responseText = error && error.message ? `Error: ${error.message}` : "Error: Request failed.";
           }
@@ -466,6 +541,8 @@
       } finally {
         runButton.disabled = false;
         promptFileEl.disabled = false;
+        apiUrlEl.disabled = false;
+        apiKeyEl.disabled = false;
         modelNameEl.disabled = false;
         systemPromptEl.disabled = false;
       }
