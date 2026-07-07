@@ -224,7 +224,7 @@
 
       <div class="field">
         <label for="promptFile">Prompt file</label>
-        <input id="promptFile" type="file" accept=".txt,.csv,text/plain,text/csv">
+        <input id="promptFile" type="file" accept=".txt,.csv,.jpg,.jpeg,.png,text/plain,text/csv,image/jpeg,image/png">
       </div>
 
       <div class="field">
@@ -270,6 +270,8 @@
     const statusEl = document.getElementById("status");
     const resultsEl = document.getElementById("results");
 
+    const textModelPlaceholder = "qwen3.5-0.8b (LM Studio), gemini-2.5-flash (Google AI Studio), meta-llama/llama-3.3-70b-instruct:free (OpenRouter)";
+    const imageModelPlaceholder = "qwen2.5-vl-7b (LM Studio, if loaded), qwen/qwen2.5-vl-72b-instruct:free (OpenRouter)";
     let results = [];
 
     function setStatus(message, isError = false) {
@@ -284,6 +286,27 @@
         reader.onerror = () => reject(new Error(reader.error ? reader.error.message : "Could not read file."));
         reader.readAsText(file);
       });
+    }
+
+    function readSelectedFileAsDataUrl(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ""));
+        reader.onerror = () => reject(new Error(reader.error ? reader.error.message : "Could not read image file."));
+        reader.readAsDataURL(file);
+      });
+    }
+
+    function isImageFile(file) {
+      return file &&
+        (file.type === "image/jpeg" ||
+          file.type === "image/png" ||
+          /\.(jpe?g|png)$/i.test(file.name));
+    }
+
+    function updateModelPlaceholder() {
+      const file = promptFileEl.files && promptFileEl.files[0];
+      modelNameEl.placeholder = isImageFile(file) ? imageModelPlaceholder : textModelPlaceholder;
     }
 
     function splitPrompts(text) {
@@ -321,13 +344,25 @@
       return status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
     }
 
-    async function callModel(apiUrl, apiKey, model, systemPrompt, input) {
+    function buildRequestHeaders(apiKey) {
+      const headers = {
+        "Content-Type": "application/json"
+      };
+
+      if (apiKey.length > 0) {
+        headers.Authorization = `Bearer ${apiKey}`;
+      }
+
+      return headers;
+    }
+
+    async function callWithRetries(requestFn) {
       const maxAttempts = 3;
       let lastError = null;
 
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         try {
-          return await callModelOnce(apiUrl, apiKey, model, systemPrompt, input);
+          return await requestFn();
         } catch (error) {
           lastError = error;
 
@@ -342,30 +377,11 @@
       throw lastError || new Error("Request failed.");
     }
 
-    async function callModelOnce(apiUrl, apiKey, model, systemPrompt, input) {
-      const messages = [];
-      const headers = {
-        "Content-Type": "application/json"
-      };
-
-      if (apiKey.length > 0) {
-        headers.Authorization = `Bearer ${apiKey}`;
-      }
-
-      if (systemPrompt.trim().length > 0) {
-        messages.push({ role: "system", content: systemPrompt });
-      }
-
-      messages.push({ role: "user", content: input });
-
+    async function postChatCompletion(apiUrl, apiKey, body) {
       const response = await fetch(apiUrl, {
         method: "POST",
-        headers,
-        body: JSON.stringify({
-          model,
-          messages,
-          temperature: 0.7
-        })
+        headers: buildRequestHeaders(apiKey),
+        body: JSON.stringify(body)
       });
 
       const responseText = await response.text();
@@ -395,6 +411,48 @@
       }
 
       return data.choices[0].message.content;
+    }
+
+    async function callModel(apiUrl, apiKey, model, systemPrompt, input) {
+      return callWithRetries(() => callModelOnce(apiUrl, apiKey, model, systemPrompt, input));
+    }
+
+    async function callModelOnce(apiUrl, apiKey, model, systemPrompt, input) {
+      const messages = [];
+
+      if (systemPrompt.trim().length > 0) {
+        messages.push({ role: "system", content: systemPrompt });
+      }
+
+      messages.push({ role: "user", content: input });
+
+      return postChatCompletion(apiUrl, apiKey, {
+        model,
+        messages,
+        temperature: 0.7
+      });
+    }
+
+    async function callImageModel(apiUrl, apiKey, model, promptText, dataUrl) {
+      return callImageModelOnce(apiUrl, apiKey, model, promptText, dataUrl);
+    }
+
+    async function callImageModelOnce(apiUrl, apiKey, model, promptText, dataUrl) {
+      const text = promptText.trim().length > 0 ? promptText : "Transcribe this image as accurately as you can.";
+
+      return postChatCompletion(apiUrl, apiKey, {
+        model,
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text },
+              { type: "image_url", image_url: { url: dataUrl } }
+            ]
+          }
+        ],
+        temperature: 0.7
+      });
     }
 
     function renderResults() {
@@ -503,6 +561,29 @@
       systemPromptEl.disabled = true;
 
       try {
+        if (isImageFile(file)) {
+          setStatus(`Loaded image "${file.name}". Sending request...`);
+
+          const dataUrl = await readSelectedFileAsDataUrl(file);
+          let responseText;
+
+          try {
+            responseText = await callImageModel(apiUrl, apiKey, model, systemPrompt, dataUrl);
+          } catch (error) {
+            responseText = error && error.message ? `Error: ${error.message}` : "Error: Request failed.";
+          }
+
+          results.push({
+            row_number: 1,
+            input: file.name,
+            response: responseText
+          });
+          renderResults();
+          setStatus("Done. Processed 1 row.");
+          downloadCsvButton.style.display = "inline-block";
+          return;
+        }
+
         const fileText = await readSelectedFile(file);
         const prompts = splitPrompts(fileText);
 
@@ -548,6 +629,7 @@
       }
     }
 
+    promptFileEl.addEventListener("change", updateModelPlaceholder);
     runButton.addEventListener("click", runBatch);
     downloadCsvButton.addEventListener("click", downloadResults);
   </script>
